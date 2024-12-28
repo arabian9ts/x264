@@ -26,7 +26,8 @@
 
 #include "common/common.h"
 #include "set.h"
-
+#include <sys/time.h>
+#include <time.h>
 #define bs_write_ue bs_write_ue_big
 
 // Indexed by pic_struct values
@@ -228,6 +229,7 @@ void x264_sps_init( x264_sps_t *sps, int i_id, x264_param_t *param )
     sps->vui.b_vcl_hrd_parameters_present = 0; // we don't support VCL HRD
     sps->vui.b_nal_hrd_parameters_present = !!param->i_nal_hrd;
     sps->vui.b_pic_struct_present = param->b_pic_struct;
+    sps->vui.hrd.i_time_offset_length = 24;
 
     // NOTE: HRD related parts of the SPS are initialised in x264_ratecontrol_init_reconfigurable
 
@@ -664,10 +666,87 @@ void x264_sei_pic_timing_write( x264_t *h, bs_t *s )
     {
         bs_write( &q, 4, h->fenc->i_pic_struct-1 ); // We use index 0 for "Auto"
 
+        struct timeval tv_date;
+        gettimeofday( &tv_date, NULL );
+        uint8_t hours = (uint8_t)((tv_date.tv_sec / 3600) % 24);
+        uint8_t minutes = (uint8_t)((tv_date.tv_sec / 60) % 60);
+        uint8_t seconds = (uint8_t)(tv_date.tv_sec % 60);
+
         // These clock timestamps are not standardised so we don't set them
         // They could be time of origin, capture or alternative ideal display
-        for( int i = 0; i < num_clock_ts[h->fenc->i_pic_struct]; i++ )
-            bs_write1( &q, 0 ); // clock_timestamp_flag
+        for( int i = 0; i < num_clock_ts[h->fenc->i_pic_struct]; i++ ) {
+            //bs_write1( &q, 0 ); // clock_timestamp_flag
+
+            // D.2.2
+            int ct_type; // Table D-2
+            switch ( h->fenc->i_pic_struct )
+            {
+            case PIC_STRUCT_PROGRESSIVE:
+            case PIC_STRUCT_DOUBLE:
+            case PIC_STRUCT_TRIPLE:
+                ct_type = 0; // progressive
+                break;
+            case PIC_STRUCT_TOP_BOTTOM:
+            case PIC_STRUCT_BOTTOM_TOP:
+            case PIC_STRUCT_TOP_BOTTOM_TOP:
+            case PIC_STRUCT_BOTTOM_TOP_BOTTOM:
+                ct_type = 1; // interlaced
+                break;
+            default:
+                ct_type = 2; // unknown
+            }
+            //x264_timecode_t *tc = &h->fenc->timecode[X264_MIN(i, h->fenc->i_timecode - 1)];
+            x264_timecode_t timecode;
+            x264_timecode_t *tc = &timecode;
+            tc->i_hours = hours;
+            tc->i_minutes = minutes;
+            tc->i_seconds = seconds;
+            tc->i_frame = 0;
+            tc->b_drop = 0;
+            tc->b_sync = 0;
+            tc->b_discontinuity = 1;
+            tc->i_counting_type = 0;
+            tc->i_type = TIMECODE_FULL;
+
+            bs_write1( &q, 1 ); // have timecode
+
+            bs_write(  &q, 2, ct_type ); // ct_type
+            bs_write1( &q, 1 ); // nuit_field_based_flag
+            bs_write(  &q, 5, tc->i_counting_type ); // counting_type (Table D-3)
+            bs_write1( &q, tc->i_type == TIMECODE_FULL); // full_timestamp_flag
+
+            bs_write1( &q, tc->b_discontinuity ); // discontinuity_flag
+            bs_write1( &q, tc->b_drop ); // cnt_dropped_flag
+
+            bs_write(  &q, 8, tc->i_frame ); // n_frames
+            if ( tc->i_type == TIMECODE_FULL )
+            {
+                bs_write( &q, 6, tc->i_seconds ); // seconds 0..59
+                bs_write( &q, 6, tc->i_minutes ); // minutes 0..59
+                bs_write( &q, 5, tc->i_hours ); // hours 0..23
+            }
+            else
+            {
+                bs_write1( &q, !!(tc->i_type & TIMECODE_SECONDS) ); // seconds_flag
+                if ( tc->i_type & TIMECODE_SECONDS )
+                {
+                    bs_write( &q, 6, tc->i_seconds ); // seconds 0..59
+                    bs_write1( &q, !!(tc->i_type & TIMECODE_MINUTES) ); // minutes_flag
+                    if ( tc->i_type & TIMECODE_MINUTES )
+                    {
+                        bs_write( &q, 6, tc->i_minutes ); // minutes 0..59
+                        bs_write1( &q, !!(tc->i_type & TIMECODE_HOURS) ); // hours_flag
+                        if ( tc->i_type & TIMECODE_HOURS )
+                        {
+                            bs_write( &q, 5, tc->i_hours ); // hours 0..23
+                        }
+                    }
+                }
+            }
+
+            // length is initialised to 24, it is user's fault if it's invalid here
+            bs_write( &q, sps->vui.hrd.i_time_offset_length, 0 );
+        }
     }
 
     bs_align_10( &q );

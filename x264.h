@@ -780,6 +780,27 @@ typedef struct x264_hrd_t
  * Payloads are written first in order of input, apart from in the case when HRD
  * is enabled where payloads are written after the Buffering Period SEI. */
 
+enum x264_timecode_type_e
+{
+    TIMECODE_SECONDS = 1,
+    TIMECODE_MINUTES = 1 << 1,
+    TIMECODE_HOURS   = 1 << 2,
+    TIMECODE_FULL    = TIMECODE_SECONDS | TIMECODE_MINUTES | TIMECODE_HOURS,
+};
+
+typedef struct x264_timecode_t
+{
+    uint8_t i_hours;
+    uint8_t i_minutes;
+    uint8_t i_seconds;
+    uint8_t i_frame;
+    int b_drop;
+    int b_sync;
+    int b_discontinuity;
+    int i_counting_type;
+    int i_type;
+} x264_timecode_t;
+
 typedef struct x264_sei_payload_t
 {
     int payload_size;
